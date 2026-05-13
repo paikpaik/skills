@@ -79,6 +79,7 @@ ssh -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTim
 ```bash
 OUT="/tmp/incident-logs-$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT"
+chmod 700 "$OUT"  # 로컬 수집 디렉토리는 소유자만 접근
 SSH_OPTS="-i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 # 파일 하나씩 scp 시도 (없으면 건너뜀)
@@ -91,6 +92,15 @@ scp -q $SSH_OPTS "$USER@$HOST:/var/log/eb-activity.log"    "$OUT/" 2>/dev/null |
 scp -q $SSH_OPTS "$USER@$HOST:/var/log/mysqld.log"         "$OUT/" 2>/dev/null || true
 scp -q $SSH_OPTS "$USER@$HOST:/var/log/mysql/error.log"    "$OUT/" 2>/dev/null || true
 
+# sudo가 필요한 파일: 600으로 복사 후 scp, 즉시 삭제
+REMOTE_TMP_FILES=()
+for remote_path in /var/log/web.stdout.log /var/log/messages; do
+  fname=$(basename "$remote_path")
+  tmp_path="/tmp/incident-collect-$$-$fname"
+  ssh $SSH_OPTS "$USER@$HOST" "sudo cp '$remote_path' '$tmp_path' && sudo chmod 600 '$tmp_path' && sudo chown $USER '$tmp_path'" 2>/dev/null || continue
+  scp -q $SSH_OPTS "$USER@$HOST:$tmp_path" "$OUT/$fname" 2>/dev/null && REMOTE_TMP_FILES+=("$tmp_path") || true
+done
+
 # glob 패턴은 ssh ls 후 scp
 for pattern in "~/.pm2/logs/*.log" "/var/app/current/logs/*.log"; do
   files=$(ssh $SSH_OPTS "$USER@$HOST" "ls $pattern 2>/dev/null" 2>/dev/null || true)
@@ -98,6 +108,22 @@ for pattern in "~/.pm2/logs/*.log" "/var/app/current/logs/*.log"; do
     scp -q $SSH_OPTS "$USER@$HOST:$f" "$OUT/" 2>/dev/null || true
   done
 done
+
+# rotated gz (sudo 필요 시 동일 패턴 적용)
+for pattern in "/var/log/rotated/web.stdout.log*.gz"; do
+  files=$(ssh $SSH_OPTS "$USER@$HOST" "sudo ls $pattern 2>/dev/null" 2>/dev/null || true)
+  for f in $files; do
+    fname=$(basename "$f")
+    tmp_path="/tmp/incident-collect-$$-$fname"
+    ssh $SSH_OPTS "$USER@$HOST" "sudo cp '$f' '$tmp_path' && sudo chmod 600 '$tmp_path' && sudo chown $USER '$tmp_path'" 2>/dev/null || continue
+    scp -q $SSH_OPTS "$USER@$HOST:$tmp_path" "$OUT/$fname" 2>/dev/null && REMOTE_TMP_FILES+=("$tmp_path") || true
+  done
+done
+
+# 서버 측 임시 파일 즉시 삭제
+if [ ${#REMOTE_TMP_FILES[@]} -gt 0 ]; then
+  ssh $SSH_OPTS "$USER@$HOST" "rm -f ${REMOTE_TMP_FILES[*]}" 2>/dev/null || true
+fi
 ```
 
 **3. 수집 결과 요약**:
@@ -267,7 +293,17 @@ nginx access log를 기반으로 영향받은 엔드포인트를 추출한다.
 
 ## Phase 6: 보고서 생성
 
-아래 형식으로 보고서를 출력한다.
+분석이 완료되면 **현재 디렉토리**에 `incident-report-{{YYYYMMDD-HHmm}}.md` 파일로 즉시 저장한다. 저장 확인은 묻지 않는다.
+
+**로그 샘플(원본) 섹션 작성 시 주의**: 인증 헤더(`Authorization`, `authorization`), 토큰, 비밀번호가 포함된 라인은 해당 값을 `[REDACTED]`로 마스킹한 후 기록한다.
+
+파일 저장 후 로컬 임시 수집 디렉토리(`/tmp/incident-logs-*`)를 삭제하고 아래와 같이 알린다:
+```
+보고서 저장 완료: ./incident-report-{{YYYYMMDD-HHmm}}.md
+임시 로그 파일 삭제 완료: /tmp/incident-logs-{{YYYYMMDD-HHmm}}/
+```
+
+보고서 형식은 다음과 같다.
 
 ---
 
@@ -375,16 +411,16 @@ nginx access log를 기반으로 영향받은 엔드포인트를 추출한다.
 
 ---
 
-보고서 출력 후 파일로 저장할지 묻는다:
-```
-보고서를 파일로 저장할까요? (기본: ./incident-report-{{YYYYMMDD-HHmm}}.md)
-```
-
----
-
 ## 분석 품질 원칙
 
 - 추정 원인이 불확실하면 "확인 필요"로 표기하고 확인 명령어를 제시한다
 - 로그 파일이 없거나 빈 경우 해당 항목을 "로그 없음"으로 표시하고 계속 진행한다
 - 에러가 없는 로그는 "정상" 으로 표시한다
 - 동적 값(IP, 사용자ID, 트랜잭션ID)은 집계 전 마스킹해 같은 에러가 다른 에러로 집계되지 않도록 한다
+
+## 보안 원칙
+
+- 서버 측 임시 파일: `chmod 600` + scp 완료 즉시 `rm -f`로 삭제한다
+- 로컬 임시 파일: 보고서 저장 후 `/tmp/incident-logs-*` 디렉토리 전체를 삭제한다
+- 보고서 원본 샘플: `Authorization`, `Cookie`, `token`, `password` 등 인증 관련 값은 `[REDACTED]`로 마스킹한다
+- sudo로 생성하는 임시 파일은 프로세스별 고유 이름(`$$` 포함)을 사용해 충돌 및 심볼릭 링크 공격을 방지한다
