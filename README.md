@@ -48,8 +48,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/paikpaik/skills/main/inciden
 **사용법**
 
 ```
-/incident-log                                          # CWD에서 로그 자동 탐색
-/incident-log /var/log                                 # 경로 지정
+# EC2에서 직접 (SSH 접속 → 로그 수집 → 분석 한 번에)
+/incident-log ssh -i "awskey.pem" root@10.2.4.58
+
+# 로컬 디렉토리 지정
+/incident-log /var/log
+
+# 경로 없이 실행 (CWD 자동 탐색)
+/incident-log
+
+# 시간 범위 지정
 /incident-log --since "2025-05-13 09:00" --until "2025-05-13 10:00"
 ```
 
