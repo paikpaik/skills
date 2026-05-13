@@ -8,13 +8,13 @@ usage() {
   echo ""
   echo "옵션:"
   echo "  -h  EC2 호스트 (IP 또는 도메인)   예) 10.2.4.58"
-  echo "  -i  SSH 키 경로                    예) ~/awskey_avatye.pem"
+  echo "  -i  SSH 키 경로                    예) ~/awskey.pem"
   echo "  -u  SSH 유저 (기본: ec2-user)"
   echo "  -o  로그 저장 디렉토리 (기본: ./incident-logs-YYYYMMDD-HHmm)"
   echo ""
   echo "예시:"
-  echo "  ./fetch.sh -h 10.2.4.58 -i ~/awskey_avatye.pem"
-  echo "  ./fetch.sh -h 10.2.4.58 -i ~/awskey_avatye.pem -u ubuntu"
+  echo "  ./fetch.sh -h 10.2.4.58 -i ~/awskey.pem"
+  echo "  ./fetch.sh -h 10.2.4.58 -i ~/awskey.pem -u ubuntu"
   exit 1
 }
 
@@ -43,8 +43,7 @@ chmod 400 "$KEY" 2>/dev/null || true
 [ -z "$OUT" ] && OUT="./incident-logs-$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT"
 
-SCP="scp -q -i $KEY -o StrictHostKeyChecking=no"
-SSH="ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HOST"
+SSH_OPTS=(-i "$KEY" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes")
 
 echo ""
 echo "EC2 로그 수집 중..."
@@ -55,7 +54,7 @@ echo ""
 fetch_file() {
   local remote="$1"
   local label="$2"
-  if $SCP "$USER@$HOST:$remote" "$OUT/" 2>/dev/null; then
+  if scp -q "${SSH_OPTS[@]}" "$USER@$HOST:$remote" "$OUT/" 2>/dev/null; then
     echo "  v $label"
   else
     echo "  - $label (없음, 건너뜀)"
@@ -66,10 +65,10 @@ fetch_glob() {
   local remote_pattern="$1"
   local label="$2"
   local files
-  files=$($SSH "ls $remote_pattern 2>/dev/null" 2>/dev/null || true)
+  files=$(ssh "${SSH_OPTS[@]}" "$USER@$HOST" "ls $remote_pattern 2>/dev/null" 2>/dev/null || true)
   if [ -n "$files" ]; then
     echo "$files" | while read -r f; do
-      $SCP "$USER@$HOST:$f" "$OUT/" 2>/dev/null || true
+      scp -q "${SSH_OPTS[@]}" "$USER@$HOST:$f" "$OUT/" 2>/dev/null || true
     done
     echo "  v $label"
   else
